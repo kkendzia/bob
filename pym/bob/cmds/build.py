@@ -248,7 +248,7 @@ esac
         return fmt
 
     def __init__(self, recipes, verbose, force, skipDeps, buildOnly, preserveEnv,
-                 envWhiteList, bobRoot, cleanBuild):
+                 envWhiteList, bobRoot, cleanBuild, sharedFolder = ''):
         self.__recipes = recipes
         self.__wasRun= {}
         self.__wasSkipped = {}
@@ -267,6 +267,7 @@ esac
         self.__cleanCheckout = False
         self.__buildIds = {}
         self.__statistic = LocalBuilderStatistic()
+        self.__sharedFolder = sharedFolder
 
     def setArchiveHandler(self, archive):
         self.__archive = archive
@@ -746,10 +747,19 @@ esac
             # Can we theoretically download the result? Exclude packages that
             # provide host tools when not building in a sandbox. Try to
             # determine a build-id for all other artifacts.
+            #
+            # Create build-id for shared packages, but don't download them
             if packageStep.doesProvideTools() and (packageStep.getSandbox() is None):
-                packageBuildId = None
+                if packageStep.isShared() and self.__sharedFolder:
+                    canDownload = False
+                    packageBuildId = self._getBuildId(packageStep, depth)
+                else:
+                    packageBuildId = None
             else:
+                canDownload = True
                 packageBuildId = self._getBuildId(packageStep, depth)
+
+
 
             # If we download the package in the last run the Build-Id is stored
             # as input hash. Otherwise the input hashes of the package step is
@@ -781,7 +791,7 @@ esac
             #   build-id changed -> prune and try download, fall back to build
             workspaceChanged = False
             wasDownloaded = False
-            if ( (not checkoutOnly) and packageBuildId and (depth >= self.__downloadDepth) ):
+            if ( (not checkoutOnly) and packageBuildId and (depth >= self.__downloadDepth) ) and canDownload:
                 # prune directory if we previously downloaded/built something different
                 if (oldInputBuildId is not None) and (oldInputBuildId != packageBuildId):
                     print(colorize("   PRUNE     {} (build-id changed)".format(prettyPackagePath), "33"))
@@ -829,7 +839,36 @@ esac
                     # invalidate result because folder was cleared
                     BobState().delInputHashes(prettyPackagePath)
                     BobState().setResultHash(prettyPackagePath, datetime.datetime.utcnow())
-                    self._runShell(packageStep, "package")
+                    if packageStep.isShared() and self.__sharedFolder:
+                        sharedpackagepath = os.path.join(self.__sharedFolder, asHexStr(packageBuildId))
+                        # link into dist if shared package available
+                        if self._checkSharedPackage(packageStep, asHexStr(packageBuildId)):
+                            print(colorize("     Link from shared location {}".format(sharedpackagepath), "32"))
+                            dirlist = os.listdir(sharedpackagepath)
+                            cwd = os.getcwd()
+                            os.chdir(prettyPackagePath)
+                            for item in dirlist:
+                                if item == '.installed':
+                                    continue
+                                itempath = os.path.join(sharedpackagepath, item)
+                                if item == 'env':
+                                    os.symlink(itempath, os.path.join(os.getcwd(), '..', item))
+                                else:
+                                    os.symlink(itempath, item, os.path.isdir(itempath))
+                            os.chdir(cwd)
+                        else:
+                            # install and then copy to shared location
+                            print(colorize("     Install in shared location {}".format(sharedpackagepath), "32"))
+                            self._runShell(packageStep, "package")
+                            if os.path.exists(sharedpackagepath):
+                                os.rmdir(sharedpackagepath)
+                            # copy all files from workspace - keep symlinks
+                            shutil.copytree(prettyPackagePath, sharedpackagepath, symlinks=True)
+                            # copy env file - important for audit
+                            shutil.copy2(os.path.join(prettyPackagePath, '..', 'env'), sharedpackagepath)
+                            open(os.path.join(sharedpackagepath, '.installed'), 'a').close()
+                    else:
+                        self._runShell(packageStep, "package")
                     packageHash = hashWorkspace(packageStep)
                     audit = self._generateAudit(packageStep, depth, packageHash)
                     workspaceChanged = True
@@ -845,6 +884,13 @@ esac
                 else:
                     BobState().setInputHashes(prettyPackagePath, [packageBuildId] + packageInputHashes)
             self._setAlreadyRun(packageStep, checkoutOnly)
+
+    def _checkSharedPackage(self, step, packageBuildId):
+        sharedPackagePath = os.path.join(self.__sharedFolder, packageBuildId)
+        if os.path.isdir(sharedPackagePath):
+            if os.path.exists(os.path.join(sharedPackagePath, '.installed')):
+                return True
+        return False
 
     def _getBuildId(self, step, depth):
         """Calculate build-id and cache result.
@@ -918,6 +964,8 @@ def commonBuildDevelop(parser, argv, bobRoot, develop):
     parser.add_argument('--download', metavar="MODE", default="deps" if develop else "yes",
         help="Download from binary archive (yes, no, deps, forced, forced-deps)",
         choices=['yes', 'no', 'deps', 'forced', 'forced-deps'])
+    parser.add_argument('-s', '--shared', default=None,
+        help="Set destination folder for shared packages")
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--sandbox', action='store_true', default=not develop,
         help="Enable sandboxing")
@@ -963,7 +1011,7 @@ def commonBuildDevelop(parser, argv, bobRoot, develop):
 
     builder = LocalBuilder(recipes, args.verbose - args.quiet, args.force,
                            args.no_deps, args.build_only, args.preserve_env,
-                           envWhiteList, bobRoot, args.clean)
+                           envWhiteList, bobRoot, args.clean, args.shared)
 
     builder.setArchiveHandler(getArchiver(recipes))
     builder.setUploadMode(args.upload)
