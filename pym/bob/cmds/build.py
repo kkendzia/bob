@@ -295,6 +295,7 @@ esac
         self.__archive = DummyArchive()
         self.__downloadDepth = 0xffff
         self.__forcedDownload = False
+        self.__forcedDownloadFallback = False
         self.__bobRoot = bobRoot
         self.__cleanBuild = cleanBuild
         self.__cleanCheckout = False
@@ -322,6 +323,11 @@ esac
                 self.__forcedDownload = True
             elif self.__archive.canDownloadLocal():
                 self.__downloadDepth = 1
+        elif mode == 'forced-fallback':
+            self.__archive.wantDownload(True)
+            self.__downloadDepth = 0
+            self.__forcedDownload = True
+            self.__forcedDownloadFallback = True
         else:
             assert mode == 'no'
             self.__archive.wantDownload(False)
@@ -947,7 +953,11 @@ esac
                         workspaceChanged = True
                         wasDownloaded = True
                     elif self.__forcedDownload:
-                        raise BuildError("Downloading artifact failed")
+                        # in case of forced-fallback fallback to forced-deps
+                        if self.__forcedDownloadFallback:
+                            self.__forcedDownloadFallback = False
+                        else:
+                            raise BuildError("Downloading artifact failed")
                 elif oldWasDownloaded:
                     self._info("   PACKAGE   skipped (already downloaded in {})".format(prettyPackagePath))
                     wasDownloaded = True
@@ -1198,8 +1208,8 @@ def commonBuildDevelop(parser, argv, bobRoot, develop):
     parser.add_argument('--upload', default=None, action='store_true',
         help="Upload to binary archive")
     parser.add_argument('--download', metavar="MODE", default=None,
-        help="Download from binary archive (yes, no, deps, forced, forced-deps)",
-        choices=['yes', 'no', 'deps', 'forced', 'forced-deps'])
+        help="Download from binary archive (yes, no, deps, forced, forced-deps, forced-fallback)",
+        choices=['yes', 'no', 'deps', 'forced', 'forced-deps', 'forced-fallback'])
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--sandbox', action='store_true', default=None,
         help="Enable sandboxing")
@@ -1273,7 +1283,6 @@ def commonBuildDevelop(parser, argv, bobRoot, develop):
 
     builder.setArchiveHandler(getArchiver(recipes))
     builder.setUploadMode(args.upload)
-    builder.setDownloadMode(args.download)
     builder.setCleanCheckout(args.clean_checkout)
     builder.setAlwaysCheckout(args.always_checkout + cfg.get('always_checkout', []))
     if args.resume: builder.loadBuildState()
@@ -1296,6 +1305,9 @@ def commonBuildDevelop(parser, argv, bobRoot, develop):
     success = False
     try:
         for p in backlog:
+            # setDownloadMode() must be set before each cook(), because it is important
+            # in forced-fallback mode (in case when more than one root recipe was passed on command line)
+            builder.setDownloadMode(args.download)
             builder.cook(p, True if args.build_mode == 'checkout-only' else False)
             resultPath = p.getWorkspacePath()
             if resultPath not in results:
