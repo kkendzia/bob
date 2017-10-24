@@ -2451,10 +2451,12 @@ class RecipeSet:
         h.update(BOB_INPUT_HASH)
         h.update(self.__cache.getDigest())
         h.update(struct.pack("<I", len(env)))
+        print("CacheKey: ", asHexStr(h.digest()))
         for (key, val) in sorted(env.detach().items()):
             h.update(struct.pack("<II", len(key), len(val)))
             h.update((key+val).encode('utf8'))
         h.update(b'\x01' if sandboxEnabled else b'\x00')
+        print("CacheKey 2nd: ", asHexStr(h.digest()))
         return (env, h.digest())
 
     def __generatePackages(self, nameFormatter, env, cacheKey, sandboxEnabled):
@@ -2540,6 +2542,7 @@ class YamlCache:
                 rawData = f.read()
                 data = yaml.safe_load(rawData)
                 digest = hashlib.sha1(rawData.encode('utf8')).digest()
+                print(name,":",asHexStr(digest))
             except Exception as e:
                 raise ParseError("Error while parsing {}: {}".format(name, str(e)))
 
