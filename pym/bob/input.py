@@ -2445,7 +2445,7 @@ class RecipeSet:
             env.update(self.__defaultEnv)
         env.setFuns(self.__stringFunctions)
         env.update(envOverrides)
-
+        print(env.data)
         # calculate cache key for persisted packages
         h = hashlib.sha1()
         h.update(BOB_INPUT_HASH)
